@@ -1,0 +1,69 @@
+// MPFMA-DS-001 6.5 - Exponent & Alignment Controller.
+// Resolves each lane's raw Booth (sum,carry) product into its true,
+// normalized product exponent/sign (the carry-save pair is only fully
+// resolved here for exponent tracking; the sum/carry pair itself is
+// carried forward untouched to Stage 2 for the real datapath add).
+// Because the extractor (6.1) already renormalizes every operand into the
+// unified 24-bit hidden-bit-at-MSB form, sig_b*sig_c always lands in
+// [2^46, 2^48), so only a single-bit (0/+1) exponent correction is ever
+// needed post-multiply -- this replaces the source paper's pre-multiply
+// LZC-sum prediction with an equivalent post-multiply resolution.
+//
+// All per-lane ports are packed vectors (lane i of a W-bit field at bits
+// [W*i +: W]) -- see stage1_unified_extractor.v's header comment.
+`include "fma_defs.vh"
+
+module stage1_exp_align_controller (
+    input  wire [`NLANE-1:0]        b_sign_i, c_sign_i,
+    input  wire [`NLANE*`EXPW-1:0]  b_exp_i,  c_exp_i,
+    input  wire [`NLANE-1:0]        b_zero_i, c_zero_i,
+    input  wire [`NLANE-1:0]        b_nan_i,  c_nan_i,
+    input  wire [`NLANE-1:0]        b_inf_i,  c_inf_i,
+    input  wire [`NLANE*48-1:0]     sum_i,
+    input  wire [`NLANE*48-1:0]     carry_i,
+    output wire [`NLANE*`EXPW-1:0]  prod_exp_o,
+    output wire [`NLANE*`SIGW-1:0]  prod_sig_o,
+    output wire [`NLANE-1:0]        prod_sign_o,
+    output wire [`NLANE-1:0]        prod_zero_o,
+    output wire [`NLANE-1:0]        prod_nan_o,
+    output wire [`NLANE-1:0]        prod_inf_o,
+    output wire [`NLANE-1:0]        prod_sticky_o
+);
+  genvar L;
+  generate
+    for (L = 0; L < `NLANE; L = L + 1) begin : EP
+      wire [48:0] resolved;
+      wire        msb47;
+      reg  signed [`EXPW-1:0] prod_exp_lane;
+      reg  [`SIGW-1:0]        prod_sig_lane;
+      assign resolved = {1'b0, sum_i[48*L +: 48]} + {1'b0, carry_i[48*L +: 48]};
+      assign msb47 = resolved[47];
+      assign prod_exp_o[`EXPW*L +: `EXPW] = prod_exp_lane;
+      assign prod_sig_o[`SIGW*L +: `SIGW] = prod_sig_lane;
+
+      reg prod_sign_r, prod_zero_r, prod_nan_r, prod_inf_r, prod_sticky_r;
+      assign prod_sign_o[L]   = prod_sign_r;
+      assign prod_zero_o[L]   = prod_zero_r;
+      assign prod_nan_o[L]    = prod_nan_r;
+      assign prod_inf_o[L]    = prod_inf_r;
+      assign prod_sticky_o[L] = prod_sticky_r;
+
+      always @* begin
+        prod_sign_r = b_sign_i[L] ^ c_sign_i[L];
+        prod_zero_r = b_zero_i[L] | c_zero_i[L];
+        prod_nan_r  = b_nan_i[L] | c_nan_i[L] |
+                        (b_inf_i[L] && c_zero_i[L]) ||
+                        (c_inf_i[L] && b_zero_i[L]);
+        prod_inf_r  = (b_inf_i[L] | c_inf_i[L]) && !prod_nan_r;
+        prod_exp_lane  = $signed(b_exp_i[`EXPW*L +: `EXPW]) + $signed(c_exp_i[`EXPW*L +: `EXPW]) +
+                          (msb47 ? 12'sd1 : 12'sd0);
+        prod_sig_lane  = prod_zero_r ? 0 : (msb47 ? resolved[47:24] : resolved[46:23]);
+        // the exact 48-bit product carries more precision than the
+        // unified 24-bit sig keeps; the discarded low bits must still
+        // count toward rounding, or full-mantissa formats (e.g. SP,
+        // m=23) silently truncate instead of correctly rounding.
+        prod_sticky_r = prod_zero_r ? 1'b0 : (msb47 ? (|resolved[23:0]) : (|resolved[22:0]));
+      end
+    end
+  endgenerate
+endmodule
