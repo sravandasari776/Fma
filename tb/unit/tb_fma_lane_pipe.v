@@ -1,6 +1,8 @@
 // tb_fma_lane_pipe.v -- unit test for fma_lane_pipe (Stages 2-4 of one accumulation).
 // Inputs are already in the unified (Stage-1) form: sign, unbiased exponent,
-// 24-bit significand with hidden bit at [23] (1.0 = exp 0, sig 800000).
+// addend significand 24 bits with hidden bit at [23] (1.0 = exp 0, sig
+// 800000), products exact 48 bits with hidden bit at [47] (the low 24 bits
+// are given separately below, 0 = the product fits in 24 bits).
 // It computes  A + P0 + P1 + P2 + P3  (only valid lanes) with ONE rounding
 // and packs the result in the format given by cls/ew.
 // The block has 2 internal pipeline registers -> result 2 clocks after the
@@ -22,9 +24,9 @@ module tb_fma_lane_pipe;
   reg                     a_s, a_z, a_n, a_i;
   reg  signed [`EXPW-1:0] a_e;
   reg  [`SIGW-1:0]        a_sig;
-  reg  [`NLANE-1:0]       p_s, p_z, p_n, p_i, p_st, p_v;
+  reg  [`NLANE-1:0]       p_s, p_z, p_n, p_i, p_v;
   reg  [`NLANE*`EXPW-1:0] p_e;
-  reg  [`NLANE*`SIGW-1:0] p_sig;
+  reg  [`NLANE*`PSIGW-1:0] p_sig;
   reg  [1:0]              cls;
   reg  [3:0]              ew;
   wire [31:0]             dout;
@@ -33,20 +35,20 @@ module tb_fma_lane_pipe;
       .clk_i(clk), .rst_n_i(rst_n),
       .a_sign_i(a_s), .a_exp_i(a_e), .a_sig_i(a_sig), .a_zero_i(a_z), .a_nan_i(a_n), .a_inf_i(a_i),
       .p_sign_i(p_s), .p_exp_i(p_e), .p_sig_i(p_sig), .p_zero_i(p_z), .p_nan_i(p_n), .p_inf_i(p_i),
-      .p_mulsticky_i(p_st), .p_valid_i(p_v), .cls_i(cls), .ew_i(ew), .dout_o(dout)
+      .p_valid_i(p_v), .cls_i(cls), .ew_i(ew), .dout_o(dout)
   );
 
   // ---- stored test vectors (so part 2 can replay them pipelined) ----
-  localparam NV = 12;
+  localparam NV = 16;
   reg [8*44-1:0] v_note [0:NV-1];
   reg [8*9-1:0]  v_fmt  [0:NV-1];
   reg [31:0]     v_exp  [0:NV-1];
   reg [3:0]      v_a    [0:NV-1];   // {s, z, n, i}
   reg signed [`EXPW-1:0] v_ae [0:NV-1];
   reg [`SIGW-1:0] v_asig [0:NV-1];
-  reg [`NLANE-1:0] v_ps [0:NV-1], v_pz [0:NV-1], v_pn [0:NV-1], v_pi [0:NV-1], v_pst [0:NV-1], v_pv [0:NV-1];
+  reg [`NLANE-1:0] v_ps [0:NV-1], v_pz [0:NV-1], v_pn [0:NV-1], v_pi [0:NV-1], v_pv [0:NV-1];
   reg [`NLANE*`EXPW-1:0] v_pe [0:NV-1];
-  reg [`NLANE*`SIGW-1:0] v_psig [0:NV-1];
+  reg [`NLANE*`PSIGW-1:0] v_psig [0:NV-1];
   reg [1:0] v_cls [0:NV-1];
   reg [3:0] v_ew  [0:NV-1];
   integer nv;
@@ -63,7 +65,7 @@ module tb_fma_lane_pipe;
     begin
       v_fmt[nv] = fmt; v_cls[nv] = tc; v_ew[nv] = tew; v_a[nv] = aflags;
       v_ae[nv] = ae; v_asig[nv] = asig; v_exp[nv] = expected; v_note[nv] = note;
-      v_ps[nv] = 0; v_pz[nv] = 4'b1111; v_pn[nv] = 0; v_pi[nv] = 0; v_pst[nv] = 0; v_pv[nv] = 0;
+      v_ps[nv] = 0; v_pz[nv] = 4'b1111; v_pn[nv] = 0; v_pi[nv] = 0; v_pv[nv] = 0;
       v_pe[nv] = 0; v_psig[nv] = 0;
       nv = nv + 1;
     end
@@ -76,13 +78,12 @@ module tb_fma_lane_pipe;
     input signed [`EXPW-1:0] pe;
     input [`SIGW-1:0] psig;
     input [2:0] flags;            // {zero, nan, inf}
-    input sticky;
+    input [`SIGW-1:0] plo;        // low 24 bits of the exact 48-bit product
     begin
       v_pv[nv-1][l] = 1'b1; v_ps[nv-1][l] = s;
       {v_pz[nv-1][l], v_pn[nv-1][l], v_pi[nv-1][l]} = flags;
-      v_pst[nv-1][l] = sticky;
       v_pe[nv-1][`EXPW*l +: `EXPW] = pe;
-      v_psig[nv-1][`SIGW*l +: `SIGW] = psig;
+      v_psig[nv-1][`PSIGW*l +: `PSIGW] = {psig, plo};
     end
   endtask
 
@@ -90,7 +91,7 @@ module tb_fma_lane_pipe;
     input integer k;
     begin
       {a_s, a_z, a_n, a_i} = v_a[k]; a_e = v_ae[k]; a_sig = v_asig[k];
-      p_s = v_ps[k]; p_z = v_pz[k]; p_n = v_pn[k]; p_i = v_pi[k]; p_st = v_pst[k]; p_v = v_pv[k];
+      p_s = v_ps[k]; p_z = v_pz[k]; p_n = v_pn[k]; p_i = v_pi[k]; p_v = v_pv[k];
       p_e = v_pe[k]; p_sig = v_psig[k]; cls = v_cls[k]; ew = v_ew[k];
     end
   endtask
@@ -116,8 +117,8 @@ module tb_fma_lane_pipe;
       prod(0, 1, -2, 24'hFFFFFF, 3'b000, 0);
     new_vec("       SP", `CLS_32, 8, 4'b0000,  0, 24'h800000, 32'h3F800000, "1.0 + 2^-24 : exact tie -> even (1.0)");
       prod(0, 0,-24, 24'h800000, 3'b000, 0);
-    new_vec("       SP", `CLS_32, 8, 4'b0000,  0, 24'h800000, 32'h3F800001, "1.0 + 2^-24 + tiny (sticky) -> up");
-      prod(0, 0,-24, 24'h800000, 3'b000, 1);
+    new_vec("       SP", `CLS_32, 8, 4'b0000,  0, 24'h800000, 32'h3F800001, "1.0 + 2^-24*(1+2^-47): above tie -> up");
+      prod(0, 0,-24, 24'h800000, 3'b000, 24'h000001);
     new_vec("       HP", `CLS_16, 5, 4'b0000,  0, 24'h800000, 32'h00003E00, "HP: 1.0 + 0.5 = 1.5");
       prod(0, 0, -1, 24'h800000, 3'b000, 0);
     new_vec("       SP", `CLS_32, 8, 4'b0000,  0, 24'h800000, 32'h40A00000, "mixed: 1 + 1+1+1+1 = 5.0");
@@ -130,6 +131,14 @@ module tb_fma_lane_pipe;
       prod(0, 0,  0, 24'h800000, 3'b000, 0);
     new_vec("       SP", `CLS_32, 8, 4'b0000,  0, 24'h800000, 32'h7F800000, "product = +Inf -> +Inf");
       prod(0, 0,  0, 24'h000000, 3'b001, 0);
+    new_vec("       SP", `CLS_32, 8, 4'b1001,  0, 24'h000000, 32'hFF800000, "A = -Inf, product 1.0 -> -Inf");
+      prod(0, 0,  0, 24'h800000, 3'b000, 0);
+    new_vec("       SP", `CLS_32, 8, 4'b0001,  0, 24'h000000, 32'h7F800001, "+Inf + (-Inf) -> NaN");
+      prod(0, 1,  0, 24'h000000, 3'b001, 0);
+    new_vec("       SP", `CLS_32, 8, 4'b1100,  0, 24'h000000, 32'h80000000, "-0 + (-0) -> -0");
+      prod(0, 1,  0, 24'h000000, 3'b100, 0);
+    new_vec("       HP", `CLS_16, 5, 4'b0100,  0, 24'h000000, 32'h00000001, "HP: 0 + 0.75*2^-24 -> rounds to 2^-24 (subnormal)");
+      prod(0, 0,-25, 24'hC00000, 3'b000, 0);
 
     // reset
     drive(0);

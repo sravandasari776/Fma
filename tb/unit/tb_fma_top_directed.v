@@ -2,8 +2,9 @@
 // fma_top (all 4 stages, 3 pipeline registers -> result 3 clocks later).
 // Every case uses simple values (1.0, 2.0, -2.5, ...) so the expected
 // answer can be worked out by hand; each expected value was also confirmed
-// with tb/golden_model.py. For the full 925-vector regression use
-// tb/tb_fma_top.v (run_sim.sh / run_vcs.sh).
+// with tb/golden_model.py. The last 8 cases are one regression case per
+// design bug found and fixed during verification (docs/DEVIATIONS.md).
+// For the full ~10k-vector regression use tb/tb_fma_top.v (tb/run_sim.sh).
 //
 // Packing reminder: lanes sit in the low 32 bits of a/b/c/dout
 //   8-bit class : 4 byte lanes    {L3,L2,L1,L0}
@@ -32,7 +33,7 @@ module tb_fma_top_directed;
       .mixmode_i(mix), .pra_i(pra), .prm_i(prm), .ewa_i(ewa), .ewm_i(ewm), .dout_o(dout)
   );
 
-  localparam NV = 18;
+  localparam NV = 26;
   reg [8*52-1:0] v_note [0:NV-1];
   reg [8*15-1:0] v_fmt  [0:NV-1];
   reg [63:0] v_a [0:NV-1], v_b [0:NV-1], v_c [0:NV-1];
@@ -110,6 +111,23 @@ module tb_fma_top_directed;
         "1.0 + 4 x (1*1) = 5.0 in BFloat16");
     vec("MIX SP+4xE5M2",  1, `CLS_32, `CLS_8,  8, 5, 32'hBF800000, 32'h3C3C3C3C, 32'h3C3C3C3C, 32'h40400000,
         "-1.0 + 4 x (1*1) = 3.0");
+    // ---- one regression case per bug fixed (docs/DEVIATIONS.md) ----
+    vec("BUG1 SP",        0, `CLS_32, `CLS_32, 8, 8, 32'h00000000, 32'h1139e399, 32'haee23e77, 32'h80a44849,
+        "full 48-bit product kept: guard bit rounds up");
+    vec("BUG2 E5M2 x4",   0, `CLS_8,  `CLS_8,  5, 5, 32'h8080b9aa, 32'h01bb0182, 32'h01810400, 32'h0001b9aa,
+        "L2: -0 + (-0.875)*(-2^-16) rounds UP to 2^-16");
+    vec("BUG3 MIX BF16",  1, `CLS_16, `CLS_8,  8, 5, 32'h00000000, 32'h007479c0, 32'ha5d7e982, 32'h0000cccb,
+        "tiny negated term: remainder sign kept (jam bit)");
+    vec("BUG4 MIX HP",    1, `CLS_16, `CLS_8,  5, 4, 32'h00003F00, 32'h3E3E3E3E, 32'h38383838, 32'h00004860,
+        "1.75 + 4 x (1.75*1) = 8.75 (was -7.25: overflow)");
+    vec("BUG5 SP",        0, `CLS_32, `CLS_32, 8, 8, 32'hBF800002, 32'h3F800001, 32'h3F800001, 32'h28800000,
+        "-(1+2^-22) + (1+2^-23)^2 = 2^-46 exactly");
+    vec("BUG6 SP",        0, `CLS_32, `CLS_32, 8, 8, 32'hFF800000, 32'h3F800000, 32'h3F800000, 32'hFF800000,
+        "-Inf + 1*1 = -Inf (was +Inf)");
+    vec("BUG7 SP",        0, `CLS_32, `CLS_32, 8, 8, 32'h7F800000, 32'hFF800000, 32'h3F800000, 32'h7F800001,
+        "+Inf + (-Inf)*1 = NaN (was Inf)");
+    vec("BUG8 SP",        0, `CLS_32, `CLS_32, 8, 8, 32'h80000000, 32'h80000000, 32'h3F800000, 32'h80000000,
+        "-0 + (-0)*1 = -0 (was +0)");
 
     drive(0);
     repeat (2) @(posedge clk);

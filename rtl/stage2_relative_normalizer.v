@@ -9,14 +9,14 @@
 // structural pass-through, retained so the module hierarchy mirrors
 // Fig. 3 of the source paper; see docs/DEVIATIONS.md.
 //
-// Ports are packed vectors (lane i at [SIGW*i +: SIGW] / [EXPW*i +: EXPW])
+// Ports are packed vectors (lane i at [PSIGW*i +: PSIGW] / [EXPW*i +: EXPW])
 // -- see stage1_unified_extractor.v's header comment.
 `include "fma_defs.vh"
 
 module stage2_relative_normalizer (
-    input  wire [`NLANE*`SIGW-1:0] sig_i,
+    input  wire [`NLANE*`PSIGW-1:0] sig_i,
     input  wire [`NLANE*`EXPW-1:0] exp_i,
-    output wire [`NLANE*`SIGW-1:0] sig_o,
+    output wire [`NLANE*`PSIGW-1:0] sig_o,
     output wire [`NLANE*`EXPW-1:0] exp_o
 );
   assign sig_o = sig_i;

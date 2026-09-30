@@ -11,7 +11,7 @@ module tb_incrementer;
   reg  [`WW-1:0]  a;
   wire [`WW-1:0]  s;
   incrementer #(8)   dut8  (.a_i(a8), .sum_o(s8));
-  incrementer #(`WW) dut40 (.a_i(a),  .sum_o(s));
+  incrementer #(`WW) dutww (.a_i(a),  .sum_o(s));
 
   reg [`WW-1:0] exp_s;
   reg ok;
@@ -41,18 +41,18 @@ module tb_incrementer;
     directed8(8'hFE, 8'hFF, "");
     directed8(8'hFF, 8'h00, "all ones wraps to 0");
 
-    section("directed tests, W=40 (the width Complement uses)");
-    a = 40'h00_0000_0000; #10; exp_s = 40'h00_0000_0001; ok = (s === exp_s); tally(ok);
+    section("directed tests, W=76 (the accumulation width Complement uses)");
+    a = 0; #10; exp_s = 1; ok = (s === exp_s); tally(ok);
     $display("   a=%h  sum=%h  exp=%h  %s", a, s, exp_s, pf(ok));
-    a = 40'h00_FFFF_FFFF; #10; exp_s = 40'h01_0000_0000; ok = (s === exp_s); tally(ok);
-    $display("   a=%h  sum=%h  exp=%h  %s", a, s, exp_s, pf(ok));
-    a = 40'hFF_FFFF_FFFF; #10; exp_s = 40'h00_0000_0000; ok = (s === exp_s); tally(ok);
-    $display("   a=%h  sum=%h  exp=%h  %s", a, s, exp_s, pf(ok));
+    a = {`WW{1'b1}} >> (`WW/2); #10; exp_s = {{(`WW-1){1'b0}}, 1'b1} << (`WW - `WW/2); ok = (s === exp_s); tally(ok);
+    $display("   a=%h  sum=%h  exp=%h  %s  carry ripples through the low half", a, s, exp_s, pf(ok));
+    a = {`WW{1'b1}}; #10; exp_s = 0; ok = (s === exp_s); tally(ok);
+    $display("   a=%h  sum=%h  exp=%h  %s  all ones wraps to 0", a, s, exp_s, pf(ok));
 
-    section("random tests, W=40");
+    section("random tests, W=76");
     f0 = n_fail;
     for (i = 0; i < 1000; i = i + 1) begin
-      a = {$random(seed), $random(seed)};
+      a = {$random(seed), $random(seed), $random(seed)};
       #10;
       exp_s = a + 1;
       ok = (s === exp_s);

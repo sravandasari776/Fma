@@ -1,0 +1,13 @@
+# simulator outputs (tb/run_sim.sh, tb/unit/run_unit.sh, tb/run_vcs.sh)
+tb/out/
+tb/unit/out/
+xcelium.d/
+xrun.history
+xrun.log
+*.shm/
+*.vcd
+*.vvp
+simv*
+csrc/
+ucli.key
+__pycache__/

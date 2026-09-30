@@ -19,9 +19,20 @@
 `define EXPW   12  // signed internal exponent width
 `define NLANE  4   // max parallel lanes (8-bit class)
 
-`define WW     40  // Stage 2/3 accumulation working width
-`define MSBPOS 36  // bit index of an unshifted term's hidden bit
-`define SHW    6   // shift-amount control width (0..63, saturating)
+`define PSIGW  48  // full product significand width (SIGW*2, exact product)
+
+// Stage 2/3 accumulation frame (MPFMA-DS-001 7.2: "aligned[75:0]"):
+//   bit  75      : two's-complement sign
+//   bits 74..72  : 3 overflow headroom bits (5 terms: addend + 4 products,
+//                  each < 2^(MSBPOS+1), sum < 2^(MSBPOS+4)) -- spec F09
+//   bits 71..24  : an unshifted 48-bit product (hidden bit at MSBPOS)
+//   bits 71..48  : an unshifted 24-bit addend  (hidden bit at MSBPOS)
+//   bits 23..1   : guard bits below the product's LSB
+//   bit  0       : sticky "jam" bit -- set when a right-shifted term lost
+//                  nonzero bits off the bottom (see align_shifter.v)
+`define WW     76  // Stage 2/3 accumulation working width
+`define MSBPOS 71  // bit index of an unshifted term's hidden bit
+`define SHW    7   // shift-amount control width (0..127, saturating)
 
 `define CLS_8  2'b00
 `define CLS_16 2'b01

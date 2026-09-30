@@ -1,5 +1,5 @@
 // tb_stage3_csla.v -- unit test for stage3_csla (8.3 Carry-Select Adder).
-// resolved_o == sum_i + carry_i (mod 2^40). The adder is split at bit 20:
+// resolved_o == sum_i + carry_i (mod 2^76). The adder is split at bit 38:
 // the upper half is pre-computed for carry-in 0 and 1 and selected by the
 // lower half's carry-out, so the directed cases target that boundary.
 `include "fma_defs.vh"
@@ -12,6 +12,9 @@ module tb_stage3_csla;
   wire [`WW-1:0] r;
   stage3_csla dut (.sum_i(s), .carry_i(c), .resolved_o(r));
 
+  localparam [`WW-1:0] ONE  = {{(`WW-1){1'b0}}, 1'b1} << `MSBPOS;   // 1.0 (bit 71)
+  localparam [`WW-1:0] ALL1 = {`WW{1'b1}};                          // -1 LSB
+  localparam [`WW-1:0] LOW  = ALL1 >> (`WW - `WW/2);               // low half all ones
   reg [`WW-1:0] e_r;
   reg ok;
   integer i, f0;
@@ -30,23 +33,23 @@ module tb_stage3_csla;
 
   initial begin
     banner("stage3_csla  (MPFMA-DS-001 8.3 Carry-Select Adder)",
-           "resolved = sum + carry (mod 2^40); upper 20 bits selected by the lower half's carry-out");
+           "resolved = sum + carry (mod 2^76); upper 38 bits selected by the lower half's carry-out");
 
     section("directed tests");
-    $display("   sum_i        carry_i    | resolved   | expected   | result");
-    directed(40'h00_0000_0000, 40'h00_0000_0000, "0 + 0");
-    directed(40'h00_000F_FFFF, 40'h00_0000_0001, "carry out of the low half (select hi+1)");
-    directed(40'h00_0007_FFFF, 40'h00_0000_0001, "no carry out of the low half");
-    directed(40'h10_0000_0000, 40'h10_0000_0000, "1.0 + 1.0 = 2.0");
-    directed(40'hFF_FFFF_FFFF, 40'h00_0000_0001, "-1 + 1 = 0 (wraps)");
-    directed(40'hF0_0000_0000, 40'h08_0000_0000, "negative result stays two's complement");
-    directed(40'hFF_FFFF_FFFF, 40'hFF_FFFF_FFFF, "-1 + -1 = -2");
+    $display("   sum_i (76b) + carry_i (76b) | resolved | expected | result");
+    directed(0, 0, "0 + 0");
+    directed(LOW, 1, "carry out of the low half (select hi+1)");
+    directed(LOW >> 1, 1, "no carry out of the low half");
+    directed(ONE, ONE, "1.0 + 1.0 = 2.0");
+    directed(ALL1, 1, "-1 + 1 = 0 (wraps)");
+    directed(~ONE + 1, ONE >> 1, "-1.0 + 0.5: negative stays two's complement");
+    directed(ALL1, ALL1, "-1 + -1 = -2");
 
     section("random tests");
     f0 = n_fail;
     for (i = 0; i < 3000; i = i + 1) begin
-      s = {$random(seed), $random(seed)};
-      c = {$random(seed), $random(seed)};
+      s = {$random(seed), $random(seed), $random(seed)};
+      c = {$random(seed), $random(seed), $random(seed)};
       #10;
       e_r = s + c;
       ok = (r === e_r);

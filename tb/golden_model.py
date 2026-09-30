@@ -117,41 +117,48 @@ def signed_val(v):
 
 def fma_accumulate(a_bits, a_fmt, pairs, out_fmt):
     """pairs: list of (b_bits,c_bits,fmt) dot-product operand pairs (same fmt).
-    Returns packed out_fmt bits for a_bits(a_fmt) + sum(b*c)."""
+    Returns packed out_fmt bits for a_bits(a_fmt) + sum(b*c), rounded once
+    (round-to-nearest-even), with IEEE 754 special-value rules:
+      - any NaN operand, Inf*0, or +Inf meeting -Inf  -> NaN (canonical, sign 0)
+      - otherwise any infinite term                  -> Inf with that term's sign
+      - exact zero sum -> -0 only if every term is a zero of sign 1
+        (e.g. -0 + (-0)*(+1)); a sum that cancels to zero is +0
+      - a nonzero result that rounds to zero keeps its sign
+    """
     av = unpack(a_bits, a_fmt)
 
-    # NaN/Inf propagation (simplified: any NaN -> NaN; Inf (no NaN) -> signed Inf
-    # of that operand; 0*Inf treated as NaN).
     any_nan = (av.kind == 'nan')
-    inf_sign = None
+    inf_signs = set()
+    if av.kind == 'inf':
+        inf_signs.add(av.sign)
+    # term list for the signed-zero rule: (is_zero, sign)
+    zero_terms = [(av.kind == 'zero', av.sign)]
     for (bb, cb, fmt) in pairs:
         bv = unpack(bb, fmt)
         cv = unpack(cb, fmt)
+        psign = bv.sign ^ cv.sign
         if bv.kind == 'nan' or cv.kind == 'nan':
             any_nan = True
-        if (bv.kind == 'inf' and cv.kind == 'zero') or (cv.kind == 'inf' and bv.kind == 'zero'):
+        elif (bv.kind == 'inf' and cv.kind == 'zero') or (cv.kind == 'inf' and bv.kind == 'zero'):
             any_nan = True
-        if bv.kind == 'inf' or cv.kind == 'inf':
-            s = (bv.sign ^ cv.sign) if (bv.kind != 'zero' and cv.kind != 'zero') else 0
-            inf_sign = s if inf_sign is None else inf_sign
-    if av.kind == 'inf':
-        inf_sign = av.sign if inf_sign is None else inf_sign
+        elif bv.kind == 'inf' or cv.kind == 'inf':
+            inf_signs.add(psign)
+        zero_terms.append((bv.kind == 'zero' or cv.kind == 'zero', psign))
 
-    if any_nan:
+    if any_nan or len(inf_signs) == 2:
         return pack(0, 'nan', None, out_fmt)
-    if inf_sign is not None:
-        return pack(inf_sign, 'inf', None, out_fmt)
+    if inf_signs:
+        return pack(inf_signs.pop(), 'inf', None, out_fmt)
 
     total = signed_val(av)
     for (bb, cb, fmt) in pairs:
         bv = unpack(bb, fmt)
         cv = unpack(cb, fmt)
-        bsv = signed_val(bv)
-        csv = signed_val(cv)
-        total += bsv * csv
+        total += signed_val(bv) * signed_val(cv)
 
     if total == 0:
-        return pack(0, 'zero', None, out_fmt)
+        all_neg_zero = all(z and sg == 1 for (z, sg) in zero_terms)
+        return pack(1 if all_neg_zero else 0, 'zero', None, out_fmt)
     sign = 1 if total < 0 else 0
     return pack(sign, 'normal', abs(total), out_fmt)
 
@@ -194,20 +201,101 @@ def unpack_lanes_from_bus(bus, cls):
     raise ValueError(cls)
 
 
+# ---------------- exact-value helpers (used by gen_vectors.py) ----------------
+
+def exact_value(a_bits, a_fmt, pairs):
+    """Exact signed Fraction of a + sum(b*c), or None if any operand is Inf/NaN."""
+    total = signed_val(unpack(a_bits, a_fmt))
+    if total is None:
+        return None
+    for (bb, cb, fmt) in pairs:
+        bsv = signed_val(unpack(bb, fmt))
+        csv = signed_val(unpack(cb, fmt))
+        if bsv is None or csv is None:
+            return None
+        total += bsv * csv
+    return total
+
+
+def is_rounding_tie(value, fmt):
+    """True if |value| lies exactly halfway between two neighbouring
+    representable numbers of fmt (the round-to-nearest-EVEN decision case)."""
+    if value is None or value == 0:
+        return False
+    info = FORMATS[fmt]
+    ew, m = info['ew'], info['m']
+    bias = bias_of(ew)
+    mag = abs(value)
+    e = mag.numerator.bit_length() - mag.denominator.bit_length()
+    while Fraction(2) ** e > mag:
+        e -= 1
+    while Fraction(2) ** (e + 1) <= mag:
+        e += 1
+    if e >= 1 - bias:
+        scaled = (mag / Fraction(2) ** e - 1) * (1 << m)
+    else:
+        scaled = mag / Fraction(2) ** (1 - bias) * (1 << m)
+    return scaled - (scaled.numerator // scaled.denominator) == Fraction(1, 2)
+
+
 # ---------------- random value generation ----------------
 
-def rand_bits(fmt, rng, kind_weights=None):
+def make_bits(fmt, sign, expf, mant):
+    info = FORMATS[fmt]
+    return (sign << (info['total'] - 1)) | (expf << info['m']) | mant
+
+
+def special_bits(fmt, kind, sign=0):
+    """kind in 'zero','inf','nan','max' (largest finite), 'minsub' (smallest subnormal)."""
+    info = FORMATS[fmt]
+    ew, m = info['ew'], info['m']
+    top = (1 << ew) - 1
+    if kind == 'zero':
+        return make_bits(fmt, sign, 0, 0)
+    if kind == 'inf':
+        return make_bits(fmt, sign, top, 0)
+    if kind == 'nan':
+        return make_bits(fmt, sign, top, 1 << (m - 1))
+    if kind == 'max':
+        return make_bits(fmt, sign, top - 1, (1 << m) - 1)
+    if kind == 'minsub':
+        return make_bits(fmt, sign, 0, 1)
+    raise ValueError(kind)
+
+
+def rand_bits(fmt, rng, kind_weights=None, exp=None, short=False):
+    """Random finite operand of fmt.
+    exp   : force this *unbiased* exponent (clamped into the normal range)
+    short : zero a random number of low mantissa bits (few significant bits
+            -> exact products/sums that land on rounding ties more often)"""
     info = FORMATS[fmt]
     ew, m, total = info['ew'], info['m'], info['total']
-    kinds = ['zero', 'subnormal', 'normal', 'normal', 'normal', 'normal']
-    kind = rng.choice(kinds)
+    bias = bias_of(ew)
     sign = rng.randint(0, 1)
-    if kind == 'zero':
-        expf, mant = 0, 0
-    elif kind == 'subnormal':
-        expf = 0
-        mant = rng.randint(1, (1 << m) - 1) if m > 0 else 0
+    if exp is not None:
+        expf = max(1, min((1 << ew) - 2, exp + bias))
+        mant = rng.randint(0, (1 << m) - 1)
     else:
-        expf = rng.randint(1, (1 << ew) - 2)
-        mant = rng.randint(0, (1 << m) - 1) if m > 0 else 0
+        kinds = ['zero', 'subnormal', 'normal', 'normal', 'normal', 'normal']
+        kind = rng.choice(kinds)
+        if kind == 'zero':
+            expf, mant = 0, 0
+        elif kind == 'subnormal':
+            expf = 0
+            mant = rng.randint(1, (1 << m) - 1) if m > 0 else 0
+        else:
+            expf = rng.randint(1, (1 << ew) - 2)
+            mant = rng.randint(0, (1 << m) - 1) if m > 0 else 0
+    if short and m > 0:
+        keep = rng.randint(0, m)
+        mant &= ~((1 << (m - keep)) - 1)
+        if expf == 0 and mant == 0:
+            mant = 1 << (m - 1)
     return (sign << (total - 1)) | (expf << m) | mant
+
+
+def unbiased_exp(bits, fmt):
+    """Unbiased exponent of a finite nonzero operand (subnormals: 1-bias)."""
+    info = FORMATS[fmt]
+    expf = (bits >> info['m']) & ((1 << info['ew']) - 1)
+    return max(expf, 1) - bias_of(info['ew'])

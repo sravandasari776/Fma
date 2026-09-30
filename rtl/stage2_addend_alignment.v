@@ -8,5 +8,5 @@ module stage2_addend_alignment (
     output wire [`WW-1:0]   aligned_o,
     output wire             sticky_o
 );
-  align_shifter u_shift (.sig_i(sig_i), .shift_i(shift_i), .aligned_o(aligned_o), .sticky_o(sticky_o));
+  align_shifter #(.SW(`SIGW)) u_shift (.sig_i(sig_i), .shift_i(shift_i), .aligned_o(aligned_o), .sticky_o(sticky_o));
 endmodule

@@ -5,7 +5,9 @@
 //   Inf or exponent too large -> exponent all ones, mantissa 0 (overflow)
 //   zero     -> all zero
 //   normal   -> {sign, exp+bias, top m mantissa bits}
-//   too small for normal -> subnormal (significand shifted right, exp field 0)
+//   subnormal: arrives already denormalized and rounded (exp = emin, hidden
+//              bit sig[23] = 0, see stage4_normalization) -> exp field 0,
+//              the same top m mantissa bits
 // Directed cases are well-known encodings that can be checked by hand.
 `include "fma_defs.vh"
 
@@ -24,8 +26,7 @@ module tb_stage4_output_finalize;
 
   // reference packer
   reg [31:0] e_pk;
-  reg [23:0] sh;
-  integer total, m, bias, ef, mant, shr, i, f0;
+  integer total, m, bias, ef, mant, i, f0;
   reg ok;
 
   task ref_model;
@@ -41,12 +42,9 @@ module tb_stage4_output_finalize;
         ef = (1 << ew) - 1; mant = 0;
       end else if (z) begin
         ef = 0; mant = 0;
-      end else if (ef >= 1) begin
-        mant = sig[22:0] >> (23 - m);
       end else begin
-        shr = 1 - ef; ef = 0;
-        sh  = sig >> shr;
-        mant = (shr >= m + 1) ? 0 : (sh[22:0] >> (23 - m));
+        if (!sig[23]) ef = 0;          // subnormal / rounded to zero
+        mant = sig[22:0] >> (23 - m);
       end
       e_pk = (sg << (total - 1)) | (ef << m) | mant;
     end
@@ -84,12 +82,14 @@ module tb_stage4_output_finalize;
     directed("       HP", `CLS_16, 5, 1,   0, 24'h000000, 3'b001, 32'hFC00, "-Inf");
     directed("       HP", `CLS_16, 5, 0,   0, 24'h000000, 3'b010, 32'h7C01, "NaN");
     directed("       HP", `CLS_16, 5, 0,   0, 24'h000000, 3'b100, 32'h0000, "zero");
-    directed("       HP", `CLS_16, 5, 0, -15, 24'h800000, 3'b000, 32'h0200, "subnormal 2^-15");
-    directed("       HP", `CLS_16, 5, 0, -24, 24'h800000, 3'b000, 32'h0001, "min subnormal 2^-24");
+    directed("       HP", `CLS_16, 5, 0, -14, 24'h400000, 3'b000, 32'h0200, "subnormal 2^-15");
+    directed("       HP", `CLS_16, 5, 0, -14, 24'h002000, 3'b000, 32'h0001, "min subnormal 2^-24");
+    directed("       HP", `CLS_16, 5, 1, -14, 24'h000000, 3'b000, 32'h8000, "tiny negative rounded to -0");
+    directed("       HP", `CLS_16, 5, 0, -14, 24'h800000, 3'b000, 32'h0400, "min normal 2^-14");
     directed("       SP", `CLS_32, 8, 0,   0, 24'h800000, 3'b000, 32'h3F800000, "1.0");
     directed("       SP", `CLS_32, 8, 1,   1, 24'hA00000, 3'b000, 32'hC0200000, "-2.5");
     directed("       SP", `CLS_32, 8, 0,   1, 24'hC90FDB, 3'b000, 32'h40490FDB, "pi");
-    directed("       SP", `CLS_32, 8, 0,-149, 24'h800000, 3'b000, 32'h00000001, "min subnormal 2^-149");
+    directed("       SP", `CLS_32, 8, 0,-126, 24'h000001, 3'b000, 32'h00000001, "min subnormal 2^-149");
     directed("       SP", `CLS_32, 8, 0, 128, 24'h800000, 3'b000, 32'h7F800000, "overflow -> +Inf");
     directed("     E4M3", `CLS_8,  4, 0,   0, 24'h800000, 3'b000, 32'h38, "1.0");
     directed("     E4M3", `CLS_8,  4, 1,   1, 24'h800000, 3'b000, 32'hC0, "-2.0");
@@ -100,7 +100,7 @@ module tb_stage4_output_finalize;
     directed("     TF32", `CLS_19, 8, 0,   0, 24'h800000, 3'b000, 32'h1FC00, "1.0");
     directed("     TF32", `CLS_19, 8, 1,   1, 24'hA00000, 3'b000, 32'h60100, "-2.5");
 
-    section("random tests: all 7 formats, normal / subnormal / overflow exponents");
+    section("random tests: all 7 formats, subnormal / normal / overflow");
     f0 = n_fail;
     for (i = 0; i < 3500; i = i + 1) begin
       case (i % 7)
@@ -115,8 +115,13 @@ module tb_stage4_output_finalize;
       total = (cls == `CLS_8) ? 8 : (cls == `CLS_16) ? 16 : (cls == `CLS_32) ? 32 : 19;
       m = total - 1 - ew; bias = (1 << (ew - 1)) - 1;
       sg  = $random(seed);
-      e   = ($random(seed) % (2 * bias + m + 6));      // spans subnormal .. overflow
-      sig = 24'h800000 | ($random(seed) & ~((24'h1 << (23 - m)) - 1)); // already rounded to m bits
+      sig = $random(seed) & ~((24'h1 << (23 - m)) - 1); // already rounded to m bits
+      if ($unsigned($random(seed)) % 4 == 0) begin
+        e = 1 - bias; sig[23] = 1'b0;                     // subnormal (hidden bit 0 at emin)
+      end else begin
+        e = (1 - bias) + $unsigned($random(seed)) % (2 * bias + 2); // emin .. overflow
+        sig[23] = 1'b1;
+      end
       {z, n, inf} = 3'b000;
       case ($unsigned($random(seed)) % 20)
         0: z = 1; 1: n = 1; 2: inf = 1; default: ;

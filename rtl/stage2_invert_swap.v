@@ -10,17 +10,14 @@
 // a single increment across all terms, in the spirit of the source
 // paper's shared-increment Incrementor (§8.5).
 //
-// Rounding correctness for negated terms whose own alignment shift
-// truncated nonzero bits (sticky_i=1): true two's-complement negation of
-// a value with a dropped fractional remainder R in (0,1 ULP) is
-// -(truncated)-1+((1-R)) -- not simply -(truncated) = ~truncated+1. Since
-// R is unknown (only its non-zero-ness is), the +1 correction is skipped
-// for exactly those terms; ~truncated (no +1) is then a guaranteed lower
-// bound of the true negated value for every sign combination, which keeps
-// the aggregate WW-bit sum a lower bound of the exact mathematical result
-// whenever any term (positive or negated) had a nonzero truncated
-// remainder -- i.e. it keeps the "sticky=1 means round up on a tie" rule
-// valid regardless of which terms' truncation produced it.
+// Every inverted term gets its +1, so each negation is an exact two's
+// complement. Terms that lost bits during alignment already carry that
+// loss as a "jam" bit in frame bit 0 (align_shifter.v), i.e. as
+// "truncated + 1/2"; negating that exactly keeps the lost remainder's sign
+// correct. (An earlier revision skipped the +1 for truncated terms to make
+// the sum a lower bound of the true value; that is only right when the
+// final result is positive, and rounded negative results up by 1 ULP --
+// see docs/DEVIATIONS.md.)
 //
 // Per-lane ports are packed vectors (lane i at [WW*i +: WW] / bit i) --
 // see stage1_unified_extractor.v's header comment.
@@ -29,11 +26,9 @@
 module stage2_invert_swap (
     input  wire [`WW-1:0]         a_aligned_i,
     input  wire                   a_sign_i,
-    input  wire                   a_sticky_i,
     input  wire [`NLANE*`WW-1:0]  prod_aligned_i,
     input  wire [`NLANE-1:0]      prod_sign_i,
     input  wire [`NLANE-1:0]      lane_valid_i,
-    input  wire [`NLANE-1:0]      prod_sticky_i,
     input  wire [2:0]             label_sel_i,
     output wire [`WW-1:0]         a_term_o,
     output wire [`NLANE*`WW-1:0]  prod_term_o,
@@ -63,15 +58,6 @@ module stage2_invert_swap (
     end
   endgenerate
 
-  wire a_inv_exact;
-  wire [`NLANE-1:0] p_inv_exact;
-  assign a_inv_exact = a_inv && !a_sticky_i;
-  generate
-    for (L = 0; L < `NLANE; L = L + 1) begin : PTC
-      assign p_inv_exact[L] = p_inv[L] && !prod_sticky_i[L];
-    end
-  endgenerate
-
-  assign neg_count_o = {2'b0, a_inv_exact} + {2'b0, p_inv_exact[0]} + {2'b0, p_inv_exact[1]} +
-                        {2'b0, p_inv_exact[2]} + {2'b0, p_inv_exact[3]};
+  assign neg_count_o = {2'b0, a_inv} + {2'b0, p_inv[0]} + {2'b0, p_inv[1]} +
+                        {2'b0, p_inv[2]} + {2'b0, p_inv[3]};
 endmodule

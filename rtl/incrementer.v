@@ -4,7 +4,7 @@
 // single pass through this incrementer, per the source paper's technique
 // of building decrement/negate paths out of increment-only hardware.
 module incrementer #(
-    parameter W = 40
+    parameter W = 76  // Complement instantiates it at the accumulation width WW
 ) (
     input  wire [W-1:0] a_i,
     output wire [W-1:0] sum_o

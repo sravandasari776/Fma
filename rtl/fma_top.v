@@ -17,7 +17,7 @@
 //   Multiple-precision mode (mixmode_i=0): pra_i==prm_i, each lane is an
 //   independent A+B*C; dout_o packs the lane_count(prm_i) independent
 //   results into its low 32 bits with the same convention.
-//   Mixed-precision mode (mixmode_i=1): a_i/c_i's slot 0 carries the
+//   Mixed-precision mode (mixmode_i=1): a_i's slot 0 carries the
 //   single higher-precision addend (class/width from pra_i/ewa_i);
 //   b_i/c_i carry lane_count(prm_i) lower-precision dot-product operands;
 //   dout_o's low 32 bits carry the single accumulated result in the
@@ -75,8 +75,8 @@ module fma_top (
   endgenerate
 
   wire [`NLANE*`EXPW-1:0] prod_exp;
-  wire [`NLANE*`SIGW-1:0] prod_sig;
-  wire [`NLANE-1:0]      prod_sign, prod_zero, prod_nan, prod_inf, prod_sticky;
+  wire [`NLANE*`PSIGW-1:0] prod_sig; // exact 48-bit products
+  wire [`NLANE-1:0]      prod_sign, prod_zero, prod_nan, prod_inf;
   stage1_exp_align_controller u_expalign (
       .b_sign_i(b_sign_flat), .c_sign_i(c_sign_flat),
       .b_exp_i(b_exp_flat),   .c_exp_i(c_exp_flat),
@@ -85,8 +85,7 @@ module fma_top (
       .b_inf_i(b_inf_flat),   .c_inf_i(c_inf_flat),
       .sum_i(mult_sum), .carry_i(mult_carry),
       .prod_exp_o(prod_exp), .prod_sig_o(prod_sig), .prod_sign_o(prod_sign),
-      .prod_zero_o(prod_zero), .prod_nan_o(prod_nan), .prod_inf_o(prod_inf),
-      .prod_sticky_o(prod_sticky)
+      .prod_zero_o(prod_zero), .prod_nan_o(prod_nan), .prod_inf_o(prod_inf)
   );
 
   reg [`NLANE-1:0] lane_valid_comb;
@@ -103,8 +102,8 @@ module fma_top (
   reg [`NLANE*`SIGW-1:0] a_sig_r2;
   reg [`NLANE-1:0]      a_zero_r2, a_nan_r2, a_inf_r2;
   reg [`NLANE*`EXPW-1:0] prod_exp_r2;
-  reg [`NLANE*`SIGW-1:0] prod_sig_r2;
-  reg [`NLANE-1:0] prod_sign_r2, prod_zero_r2, prod_nan_r2, prod_inf_r2, prod_sticky_r2;
+  reg [`NLANE*`PSIGW-1:0] prod_sig_r2;
+  reg [`NLANE-1:0] prod_sign_r2, prod_zero_r2, prod_nan_r2, prod_inf_r2;
   reg [`NLANE-1:0] lane_valid_r2;
   reg mixmode_r2;
   reg [1:0] pra_r2, prm_r2;
@@ -116,7 +115,6 @@ module fma_top (
       a_zero_r2 <= 0; a_nan_r2 <= 0; a_inf_r2 <= 0;
       prod_exp_r2 <= 0; prod_sig_r2 <= 0;
       prod_sign_r2 <= 0; prod_zero_r2 <= 0; prod_nan_r2 <= 0; prod_inf_r2 <= 0;
-      prod_sticky_r2 <= 0;
       lane_valid_r2 <= 0;
       mixmode_r2 <= 1'b0; pra_r2 <= `CLS_8; prm_r2 <= `CLS_8; ewa_r2 <= 0; ewm_r2 <= 0;
     end else begin
@@ -125,7 +123,6 @@ module fma_top (
       prod_exp_r2 <= prod_exp; prod_sig_r2 <= prod_sig;
       prod_sign_r2 <= prod_sign; prod_zero_r2 <= prod_zero;
       prod_nan_r2 <= prod_nan; prod_inf_r2 <= prod_inf;
-      prod_sticky_r2 <= prod_sticky;
       lane_valid_r2 <= lane_valid_comb;
       mixmode_r2 <= mixmode_i; pra_r2 <= pra_i; prm_r2 <= prm_i; ewa_r2 <= ewa_i; ewm_r2 <= ewm_i;
     end
@@ -145,8 +142,8 @@ module fma_top (
       reg                     g_a_zero, g_a_nan, g_a_inf;
       reg  [`NLANE-1:0]       g_p_sign;
       reg  [`NLANE*`EXPW-1:0] g_p_exp;
-      reg  [`NLANE*`SIGW-1:0] g_p_sig;
-      reg  [`NLANE-1:0]       g_p_zero, g_p_nan, g_p_inf, g_p_mulsticky;
+      reg  [`NLANE*`PSIGW-1:0] g_p_sig;
+      reg  [`NLANE-1:0]       g_p_zero, g_p_nan, g_p_inf;
       reg  [`NLANE-1:0]       g_p_valid;
       reg  [1:0]              g_cls;
       reg  [3:0]              g_ew;
@@ -161,7 +158,6 @@ module fma_top (
           g_a_zero = a_zero_r2[0]; g_a_nan = a_nan_r2[0]; g_a_inf = a_inf_r2[0];
           g_p_sign = prod_sign_r2; g_p_exp = prod_exp_r2; g_p_sig = prod_sig_r2;
           g_p_zero = prod_zero_r2; g_p_nan = prod_nan_r2; g_p_inf = prod_inf_r2;
-          g_p_mulsticky = prod_sticky_r2;
           g_p_valid = lane_valid_r2;
           g_cls = pra_r2; g_ew = ewa_r2;
         end else begin
@@ -171,15 +167,14 @@ module fma_top (
           g_a_sig  = a_sig_r2[`SIGW*G +: `SIGW];
           g_a_zero = a_zero_r2[G]; g_a_nan = a_nan_r2[G]; g_a_inf = a_inf_r2[G];
           g_p_sign = 0; g_p_exp = 0; g_p_sig = 0;
-          g_p_zero = {`NLANE{1'b1}}; g_p_nan = 0; g_p_inf = 0; g_p_mulsticky = 0;
+          g_p_zero = {`NLANE{1'b1}}; g_p_nan = 0; g_p_inf = 0;
           g_p_valid = 0;
           g_p_sign[0] = prod_sign_r2[G];
           g_p_exp[`EXPW*0 +: `EXPW] = prod_exp_r2[`EXPW*G +: `EXPW];
-          g_p_sig[`SIGW*0 +: `SIGW] = prod_sig_r2[`SIGW*G +: `SIGW];
+          g_p_sig[`PSIGW*0 +: `PSIGW] = prod_sig_r2[`PSIGW*G +: `PSIGW];
           g_p_zero[0] = prod_zero_r2[G];
           g_p_nan[0]  = prod_nan_r2[G];
           g_p_inf[0]  = prod_inf_r2[G];
-          g_p_mulsticky[0] = prod_sticky_r2[G];
           g_p_valid[0] = lane_valid_r2[G];
           g_cls = prm_r2; g_ew = ewm_r2;
         end
@@ -191,7 +186,6 @@ module fma_top (
           .a_zero_i(g_a_zero), .a_nan_i(g_a_nan), .a_inf_i(g_a_inf),
           .p_sign_i(g_p_sign), .p_exp_i(g_p_exp), .p_sig_i(g_p_sig),
           .p_zero_i(g_p_zero), .p_nan_i(g_p_nan), .p_inf_i(g_p_inf),
-          .p_mulsticky_i(g_p_mulsticky),
           .p_valid_i(g_p_valid),
           .cls_i(g_cls), .ew_i(g_ew),
           .dout_o(lp_dout[G])

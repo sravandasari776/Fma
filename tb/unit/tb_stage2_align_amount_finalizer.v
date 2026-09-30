@@ -1,5 +1,5 @@
 // tb_stage2_align_amount_finalizer.v -- unit test for stage2_align_amount_finalizer (7.1).
-// shift = ref_exp - a_exp, clamped to 0 when negative and saturated at 63.
+// shift = ref_exp - a_exp, clamped to 0 when negative and saturated at 127.
 `include "fma_defs.vh"
 
 module tb_stage2_align_amount_finalizer;
@@ -16,7 +16,7 @@ module tb_stage2_align_amount_finalizer;
   task ref_model;
     begin
       d = ref_e - a_e;
-      exp_sh = (d < 0) ? 0 : (d > 63) ? 63 : d;
+      exp_sh = (d < 0) ? 0 : (d > 127) ? 127 : d;
     end
   endtask
 
@@ -28,23 +28,23 @@ module tb_stage2_align_amount_finalizer;
       ref_model;
       ok = (sh === exp_sh);
       tally(ok);
-      $display("   %5d  %5d | %5d | %2d  | %2d  | %s  %0s", ref_e, a_e, d, sh, exp_sh, pf(ok), note);
+      $display("   %5d  %5d | %5d | %3d | %3d | %s  %0s", ref_e, a_e, d, sh, exp_sh, pf(ok), note);
     end
   endtask
 
   initial begin
     banner("stage2_align_amount_finalizer  (MPFMA-DS-001 7.1 Align Amount Finalizer)",
-           "addend shift = ref_exp - a_exp ; clamp < 0 to 0 ; saturate > 63 to 63");
+           "addend shift = ref_exp - a_exp ; clamp < 0 to 0 ; saturate > 127 to 127");
 
     section("directed tests");
     $display("   ref_e  a_exp | diff  | got | exp | result");
     directed(  5,    5, "addend is the reference: no shift");
     directed( 10,    3, "addend 7 binades smaller");
     directed(  3,   10, "addend larger -> clamp to 0");
-    directed(100, -100, "huge gap -> saturate to 63");
+    directed(200, -100, "huge gap -> saturate to 127");
     directed(-10,  -30, "negative exponents");
-    directed( 63,    0, "exactly 63");
-    directed( 64,    0, "64 -> saturate");
+    directed(127,    0, "exactly 127");
+    directed(128,    0, "128 -> saturate");
 
     section("random tests");
     f0 = n_fail;

@@ -31,11 +31,10 @@ module fma_lane_pipe (
 
     input  wire [`NLANE-1:0]       p_sign_i,
     input  wire [`NLANE*`EXPW-1:0] p_exp_i,
-    input  wire [`NLANE*`SIGW-1:0] p_sig_i,
+    input  wire [`NLANE*`PSIGW-1:0] p_sig_i, // exact 48-bit products
     input  wire [`NLANE-1:0]       p_zero_i,
     input  wire [`NLANE-1:0]       p_nan_i,
     input  wire [`NLANE-1:0]       p_inf_i,
-    input  wire [`NLANE-1:0]       p_mulsticky_i,
     input  wire [`NLANE-1:0]       p_valid_i,
 
     input  wire [1:0]              cls_i,
@@ -54,7 +53,7 @@ module fma_lane_pipe (
       .exp_sel_o(ref_exp_s2), .label_sel_o(label_sel_s2)
   );
 
-  wire [`NLANE*`SIGW-1:0] p_sig_norm;
+  wire [`NLANE*`PSIGW-1:0] p_sig_norm;
   wire [`NLANE*`EXPW-1:0] p_exp_norm;
   stage2_relative_normalizer u_relnorm (
       .sig_i(p_sig_i), .exp_i(p_exp_i), .sig_o(p_sig_norm), .exp_o(p_exp_norm)
@@ -80,9 +79,9 @@ module fma_lane_pipe (
       wire [`WW-1:0]  aligned_lane;
       wire            sticky_lane;
       wire signed [`EXPW-1:0] prod_exp_lane;
-      wire [`SIGW-1:0]        prod_sig_lane;
+      wire [`PSIGW-1:0]       prod_sig_lane;
       assign prod_exp_lane = $signed(p_exp_norm[`EXPW*L +: `EXPW]);
-      assign prod_sig_lane = p_sig_norm[`SIGW*L +: `SIGW];
+      assign prod_sig_lane = p_sig_norm[`PSIGW*L +: `PSIGW];
 
       stage2_product_align_ctrl u_pctrl (
           .ref_exp_i(ref_exp_s2), .prod_exp_i(prod_exp_lane), .shift_o(shift_lane)
@@ -93,11 +92,7 @@ module fma_lane_pipe (
       );
       assign shift_p_s2[`SHW*L +: `SHW] = shift_lane;
       assign p_aligned_s2[`WW*L +: `WW] = aligned_lane;
-      // OR in the multiplier's own truncation sticky (the product's true
-      // 48-bit precision minus the 24 bits kept in prod_sig, see
-      // stage1_exp_align_controller.v) alongside the alignment-shift
-      // sticky computed here.
-      assign p_sticky_s2[L] = sticky_lane | p_mulsticky_i[L];
+      assign p_sticky_s2[L] = sticky_lane;
     end
   endgenerate
 
@@ -106,9 +101,8 @@ module fma_lane_pipe (
   wire [2:0]            neg_count_s2;
   wire                  ref_sign_s2;
   stage2_invert_swap u_invswap (
-      .a_aligned_i(a_aligned_s2), .a_sign_i(a_sign_i), .a_sticky_i(a_sticky_s2),
+      .a_aligned_i(a_aligned_s2), .a_sign_i(a_sign_i),
       .prod_aligned_i(p_aligned_s2), .prod_sign_i(p_sign_i), .lane_valid_i(p_valid_i),
-      .prod_sticky_i(p_sticky_s2),
       .label_sel_i(label_sel_s2),
       .a_term_o(a_term_s2), .prod_term_o(p_term_s2), .neg_count_o(neg_count_s2),
       .ref_sign_o(ref_sign_s2)
@@ -120,18 +114,30 @@ module fma_lane_pipe (
       .sum_o(sum_s2), .carry_o(carry_s2)
   );
 
-  reg is_nan_s2, is_inf_s2;
+  // Special-value detection (IEEE 754):
+  //   NaN  if any operand is NaN, any product is Inf*0 (flagged by the
+  //        Exponent & Alignment Controller), or +Inf and -Inf meet (Inf-Inf)
+  //   Inf  otherwise if any term is infinite; its sign is that term's sign
+  //   -0   (zero_sign) only if every term is a zero with sign 1
+  reg is_nan_s2, is_inf_s2, inf_sign_s2, zero_sign_s2;
+  reg pos_inf, neg_inf;
   integer i;
   always @* begin
-    is_nan_s2 = a_nan_i;
-    is_inf_s2 = a_inf_i;
+    is_nan_s2    = a_nan_i;
+    pos_inf      = a_inf_i & !a_sign_i;
+    neg_inf      = a_inf_i &  a_sign_i;
+    zero_sign_s2 = a_zero_i & a_sign_i;
     for (i = 0; i < `NLANE; i = i + 1) begin
       if (p_valid_i[i]) begin
-        is_nan_s2 = is_nan_s2 | p_nan_i[i];
-        is_inf_s2 = is_inf_s2 | p_inf_i[i];
+        is_nan_s2    = is_nan_s2 | p_nan_i[i];
+        pos_inf      = pos_inf | (p_inf_i[i] & !p_sign_i[i]);
+        neg_inf      = neg_inf | (p_inf_i[i] &  p_sign_i[i]);
+        zero_sign_s2 = zero_sign_s2 & p_zero_i[i] & p_sign_i[i];
       end
     end
-    is_inf_s2 = is_inf_s2 & !is_nan_s2;
+    is_nan_s2   = is_nan_s2 | (pos_inf & neg_inf);
+    is_inf_s2   = (pos_inf | neg_inf) & !is_nan_s2;
+    inf_sign_s2 = neg_inf;
   end
 
   // ---- pipeline register: Stage2 -> Stage3 ----
@@ -139,7 +145,7 @@ module fma_lane_pipe (
   reg signed [`EXPW-1:0] ref_exp_r3;
   reg a_sticky_r3;
   reg [`NLANE-1:0] p_sticky_r3;
-  reg is_nan_r3, is_inf_r3;
+  reg is_nan_r3, is_inf_r3, inf_sign_r3, zero_sign_r3;
   reg ref_sign_r3;
   reg [1:0] cls_r3;
   reg [3:0] ew_r3;
@@ -149,11 +155,13 @@ module fma_lane_pipe (
       sum_r3 <= 0; carry_r3 <= 0; ref_exp_r3 <= 0; a_sticky_r3 <= 1'b0;
       p_sticky_r3 <= 0;
       is_nan_r3 <= 1'b0; is_inf_r3 <= 1'b0; ref_sign_r3 <= 1'b0; cls_r3 <= `CLS_8; ew_r3 <= 0;
+      inf_sign_r3 <= 1'b0; zero_sign_r3 <= 1'b0;
     end else begin
       sum_r3 <= sum_s2; carry_r3 <= carry_s2; ref_exp_r3 <= ref_exp_s2;
       a_sticky_r3 <= a_sticky_s2;
       p_sticky_r3 <= p_sticky_s2;
       is_nan_r3 <= is_nan_s2; is_inf_r3 <= is_inf_s2; ref_sign_r3 <= ref_sign_s2;
+      inf_sign_r3 <= inf_sign_s2; zero_sign_r3 <= zero_sign_s2;
       cls_r3 <= cls_i; ew_r3 <= ew_i;
     end
   end
@@ -185,7 +193,7 @@ module fma_lane_pipe (
   // ---- pipeline register: Stage3 -> Stage4 ----
   reg [`WW-1:0] magnitude_r4;
   reg signed [`EXPW-1:0] exp_adjust_r4, ref_exp_r4;
-  reg sign_r4, is_zero_r4, sticky_r4, is_nan_r4, is_inf_r4;
+  reg sign_r4, is_zero_r4, sticky_r4, is_nan_r4, is_inf_r4, inf_sign_r4, zero_sign_r4;
   reg ref_sign_r4;
   reg [1:0] cls_r4;
   reg [3:0] ew_r4;
@@ -195,10 +203,12 @@ module fma_lane_pipe (
       magnitude_r4 <= 0; exp_adjust_r4 <= 0; ref_exp_r4 <= 0;
       sign_r4 <= 1'b0; is_zero_r4 <= 1'b0; sticky_r4 <= 1'b0;
       is_nan_r4 <= 1'b0; is_inf_r4 <= 1'b0; ref_sign_r4 <= 1'b0; cls_r4 <= `CLS_8; ew_r4 <= 0;
+      inf_sign_r4 <= 1'b0; zero_sign_r4 <= 1'b0;
     end else begin
       magnitude_r4 <= magnitude_s3; exp_adjust_r4 <= exp_adjust_s3; ref_exp_r4 <= ref_exp_r3;
       sign_r4 <= sign_s3; is_zero_r4 <= is_zero_s3; sticky_r4 <= sticky_s3;
       is_nan_r4 <= is_nan_r3; is_inf_r4 <= is_inf_r3; ref_sign_r4 <= ref_sign_r3;
+      inf_sign_r4 <= inf_sign_r3; zero_sign_r4 <= zero_sign_r3;
       cls_r4 <= cls_r3; ew_r4 <= ew_r3;
     end
   end
@@ -206,9 +216,12 @@ module fma_lane_pipe (
   // ---------------- Stage 4: normalize/round/pack ----------------
   wire [`WW-1:0] normalized_s4;
   wire extra_sticky_s4;
+  wire signed [`EXPW-1:0] norm_adjust_s4; // LZAU shift, limited at emin for subnormals
   stage4_normalization u_norm (
       .magnitude_i(magnitude_r4), .exp_adjust_i(exp_adjust_r4),
-      .normalized_o(normalized_s4), .extra_sticky_o(extra_sticky_s4)
+      .ref_exp_i(ref_exp_r4), .ew_i(ew_r4),
+      .normalized_o(normalized_s4), .extra_sticky_o(extra_sticky_s4),
+      .exp_adjust_o(norm_adjust_s4)
   );
 
   wire [`SIGW-1:0] rounded_sig_s4;
@@ -222,13 +235,16 @@ module fma_lane_pipe (
 
   wire signed [`EXPW-1:0] final_exp_s4;
   stage4_exp_adjuster u_expadj (
-      .ref_exp_i(ref_exp_r4), .exp_adjust_i(exp_adjust_r4), .rnd_ovf_i(rnd_ovf_s4),
+      .ref_exp_i(ref_exp_r4), .exp_adjust_i(norm_adjust_s4), .rnd_ovf_i(rnd_ovf_s4),
       .final_exp_o(final_exp_s4)
   );
 
   wire final_sign_s4;
   stage4_sign_detection u_signdet (
-      .sign_incr_i(sign_r4), .ref_sign_i(ref_sign_r4), .is_zero_i(is_zero_r4), .sign_o(final_sign_s4)
+      .sign_incr_i(sign_r4), .ref_sign_i(ref_sign_r4),
+      .is_zero_i(is_zero_r4), .zero_sign_i(zero_sign_r4),
+      .is_nan_i(is_nan_r4), .is_inf_i(is_inf_r4), .inf_sign_i(inf_sign_r4),
+      .sign_o(final_sign_s4)
   );
 
   stage4_output_finalize u_finalize (

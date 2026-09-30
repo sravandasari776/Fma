@@ -1,6 +1,6 @@
 // tb_stage3_complement.v -- unit test for stage3_complement (8.6).
-// Converts the CSLA's 40-bit two's-complement result to sign + magnitude:
-//   sign_o = bit 39 ; magnitude_o = sign ? -x : x
+// Converts the CSLA's 76-bit two's-complement result to sign + magnitude:
+//   sign_o = bit 75 ; magnitude_o = sign ? -x : x   (1.0 = bit 71)
 `include "fma_defs.vh"
 
 module tb_stage3_complement;
@@ -12,6 +12,8 @@ module tb_stage3_complement;
   wire [`WW-1:0] mag;
   stage3_complement dut (.resolved_i(x), .sign_o(sg), .magnitude_o(mag));
 
+  localparam [`WW-1:0] ONE  = {{(`WW-1){1'b0}}, 1'b1} << `MSBPOS;   // 1.0 (bit 71)
+  localparam [`WW-1:0] ALL1 = {`WW{1'b1}};                          // -1 LSB
   reg           e_sg, ok;
   reg [`WW-1:0] e_mag;
   integer i, f0;
@@ -37,21 +39,21 @@ module tb_stage3_complement;
 
   initial begin
     banner("stage3_complement  (MPFMA-DS-001 8.6 Complement)",
-           "sign = resolved[39] ; magnitude = sign ? (~resolved + 1) : resolved");
+           "sign = resolved[75] ; magnitude = sign ? (~resolved + 1) : resolved");
 
     section("directed tests");
-    $display("   resolved   | got: s magnitude  | exp: s magnitude  | result");
-    directed(40'h10_0000_0000, "+1.0 stays as is");
-    directed(40'hF0_0000_0000, "-1.0 -> sign 1, magnitude 1.0");
-    directed(40'hFF_FFFF_FFFF, "-1 LSB -> magnitude 1");
-    directed(40'h00_0000_0000, "zero");
-    directed(40'h7F_FFFF_FFFF, "largest positive");
-    directed(40'h80_0000_0000, "most negative (magnitude = 2^39)");
+    $display("   resolved (76b)      | got: s magnitude        | exp: s magnitude        | result");
+    directed(ONE,           "+1.0 stays as is");
+    directed(~ONE + 1,      "-1.0 -> sign 1, magnitude 1.0");
+    directed(ALL1,          "-1 LSB -> magnitude 1");
+    directed(0,             "zero");
+    directed(ALL1 >> 1,     "largest positive");
+    directed(~(ALL1 >> 1),  "most negative (magnitude = 2^75)");
 
     section("random tests");
     f0 = n_fail;
     for (i = 0; i < 2000; i = i + 1) begin
-      x = {$random(seed), $random(seed)};
+      x = {$random(seed), $random(seed), $random(seed)};
       #10;
       ref_model;
       ok = (sg === e_sg) && (mag === e_mag);

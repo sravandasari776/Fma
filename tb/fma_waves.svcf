@@ -1,0 +1,66 @@
+# SimVision command script for the U_FMA regression waveform.
+# Opened automatically by:   tb/run_sim.sh --demo --gui
+# or by hand (from tb/out/): simvision -input ../fma_waves.svcf
+#
+# Shows, top to bottom:
+#   clock/reset, the operation being APPLIED (label + decoded A/B/C lanes),
+#   the raw FMA ports (hex), and the result COMING OUT 3 clocks later
+#   (label, got vs expected as decimal numbers and hex, mismatch flag).
+
+database require fma_waves -search {
+	./fma_waves.shm/fma_waves.trn
+	./out/fma_waves.shm/fma_waves.trn
+	./tb/out/fma_waves.shm/fma_waves.trn
+}
+
+window new WaveWindow -name "U_FMA demo"
+waveform using {U_FMA demo}
+
+set id [waveform add -signals {fma_waves::tb_fma_top.clk fma_waves::tb_fma_top.rst_n}]
+
+# ---- operation being applied this clock ----
+set id [waveform add -signals {fma_waves::tb_fma_top.view_in_idx}]
+waveform format $id -radix %d
+set id [waveform add -signals {fma_waves::tb_fma_top.view_in_label}]
+waveform format $id -radix %a
+set id [waveform add -signals {
+	fma_waves::tb_fma_top.view_in_A0 fma_waves::tb_fma_top.view_in_A1
+	fma_waves::tb_fma_top.view_in_A2 fma_waves::tb_fma_top.view_in_A3
+	fma_waves::tb_fma_top.view_in_B0 fma_waves::tb_fma_top.view_in_B1
+	fma_waves::tb_fma_top.view_in_B2 fma_waves::tb_fma_top.view_in_B3
+	fma_waves::tb_fma_top.view_in_C0 fma_waves::tb_fma_top.view_in_C1
+	fma_waves::tb_fma_top.view_in_C2 fma_waves::tb_fma_top.view_in_C3
+}]
+
+# ---- raw FMA ports ----
+set id [waveform add -signals {
+	fma_waves::tb_fma_top.mixmode_i
+	fma_waves::tb_fma_top.pra_i fma_waves::tb_fma_top.prm_i
+	fma_waves::tb_fma_top.ewa_i fma_waves::tb_fma_top.ewm_i
+}]
+waveform format $id -radix %d
+set id [waveform add -signals {
+	fma_waves::tb_fma_top.a_i fma_waves::tb_fma_top.b_i fma_waves::tb_fma_top.c_i
+	fma_waves::tb_fma_top.dout_o
+}]
+waveform format $id -radix %x
+
+# ---- result leaving the pipeline this clock ----
+set id [waveform add -signals {fma_waves::tb_fma_top.view_out_idx}]
+waveform format $id -radix %d
+set id [waveform add -signals {fma_waves::tb_fma_top.view_out_label}]
+waveform format $id -radix %a
+set id [waveform add -signals {
+	fma_waves::tb_fma_top.view_out_got0 fma_waves::tb_fma_top.view_out_exp0
+	fma_waves::tb_fma_top.view_out_got1 fma_waves::tb_fma_top.view_out_exp1
+	fma_waves::tb_fma_top.view_out_got2 fma_waves::tb_fma_top.view_out_exp2
+	fma_waves::tb_fma_top.view_out_got3 fma_waves::tb_fma_top.view_out_exp3
+}]
+set id [waveform add -signals {fma_waves::tb_fma_top.view_out_got_hex fma_waves::tb_fma_top.view_out_exp_hex}]
+waveform format $id -radix %x
+set id [waveform add -signals {
+	fma_waves::tb_fma_top.view_out_nan fma_waves::tb_fma_top.view_mismatch
+	fma_waves::tb_fma_top.pass_count fma_waves::tb_fma_top.fail_count
+}]
+
+waveform xview limits 0 500ns

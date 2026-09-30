@@ -21,7 +21,7 @@ function [`WW-1:0] shift_mask;
   end
 endfunction
 
-// Right-shift a WW-bit magnitude by `amt` (0..63, saturating beyond WW).
+// Right-shift a WW-bit magnitude by `amt` (0..127, saturating beyond WW).
 // Returns {sticky, shifted} packed into one WW+1-bit value (bit WW =
 // sticky: whether any '1' bit was shifted out, needed for rounding).
 function [`WW:0] shift_right_sticky;
